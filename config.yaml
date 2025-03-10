@@ -1,0 +1,41 @@
+# Configuration file for mdCATH processor pipeline
+
+input:
+  mdcath_dir: "/mnt/datasets/MD_CATH/data/"
+  domain_ids: []  # Empty means process all domains
+  temperatures: [320, 348, 379, 413, 450]
+
+output:
+  base_dir: "~/drFelix/data/"  # Will be expanded automatically
+  pdb_frames_dir: "interim/aposteriori_extracted_pdb_frames_files"
+  rmsf_dir: "interim/per-residue-rmsf"
+  summary_dir: "processed/mdcath_summary"
+  log_file: "pipeline.log"
+
+processing:
+  frame_selection:
+    method: "regular"  # Options: regular, rmsd, gyration, random
+    num_frames: 10     # Number of frames to extract per temperature
+    cluster_method: "kmeans"  # For RMSD-based selection
+  
+  cleaning:
+    replace_chain_0_with_A: true
+    fix_atom_numbering: true
+    remove_hydrogens: false
+  
+  validation:
+    check_missing_residues: true
+    verify_rmsf_mapping: true
+    compare_to_reference: false
+    reference_path: ""
+
+performance:
+  num_cores: 0  # 0 means auto-detect
+  batch_size: 10
+  memory_limit_gb: 16
+
+logging:
+  level: "INFO"     # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  console_level: "INFO"
+  file_level: "DEBUG"
+  show_progress_bars: true

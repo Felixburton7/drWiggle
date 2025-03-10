@@ -1,0 +1,12 @@
+h5py>=3.7.0
+numpy>=1.22.0
+pandas>=1.5.0
+matplotlib>=3.5.0
+seaborn>=0.12.0
+pyyaml>=6.0
+tqdm>=4.64.0
+
+[dev]
+pytest>=7.0.0
+black>=22.0.0
+flake8>=5.0.0
