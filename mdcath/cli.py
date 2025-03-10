@@ -25,27 +25,31 @@ from mdcath.processing.rmsf_analyzer import analyze_all_rmsf
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="mdCATH processor pipeline for MD trajectory data",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    
-    parser.add_argument(
+    # Create a parent parser for global arguments
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    parent_parser.add_argument(
         "--config", type=str, default="config.yaml",
         help="Path to configuration file"
+    )
+    
+    # Main parser inherits global options from the parent_parser
+    parser = argparse.ArgumentParser(
+        description="mdCATH processor pipeline for MD trajectory data",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        parents=[parent_parser]
     )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
     # List available domains
-    list_parser = subparsers.add_parser("list", help="List available domains")
+    list_parser = subparsers.add_parser("list", parents=[parent_parser], help="List available domains")
     list_parser.add_argument(
         "--limit", type=int, default=0,
         help="Limit number of domains listed (0 for all)"
     )
     
     # Extract RMSF data
-    rmsf_parser = subparsers.add_parser("extract-rmsf", help="Extract RMSF data")
+    rmsf_parser = subparsers.add_parser("extract-rmsf", parents=[parent_parser], help="Extract RMSF data")
     rmsf_parser.add_argument(
         "--domains", type=str, nargs="+", default=[],
         help="List of domains to process (empty for all)"
@@ -55,8 +59,8 @@ def parse_args():
         help="List of temperatures to process (empty for all)"
     )
     
-    # Extract frames
-    frames_parser = subparsers.add_parser("extract-frames", help="Extract trajectory frames")
+    # Similarly, add parent_parser to other subparsers...
+    frames_parser = subparsers.add_parser("extract-frames", parents=[parent_parser], help="Extract trajectory frames")
     frames_parser.add_argument(
         "--domains", type=str, nargs="+", default=[],
         help="List of domains to process (empty for all)"
@@ -74,14 +78,11 @@ def parse_args():
         help="Frame selection method (empty for config default)"
     )
     
-    # Clean PDB files
-    clean_parser = subparsers.add_parser("clean-pdbs", help="Clean extracted PDB files")
+    clean_parser = subparsers.add_parser("clean-pdbs", parents=[parent_parser], help="Clean extracted PDB files")
     
-    # Analyze RMSF data
-    analyze_parser = subparsers.add_parser("analyze-rmsf", help="Analyze RMSF data")
+    analyze_parser = subparsers.add_parser("analyze-rmsf", parents=[parent_parser], help="Analyze RMSF data")
     
-    # Run all steps
-    all_parser = subparsers.add_parser("all", help="Run all processing steps")
+    all_parser = subparsers.add_parser("all", parents=[parent_parser], help="Run all processing steps")
     all_parser.add_argument(
         "--domains", type=str, nargs="+", default=[],
         help="List of domains to process (empty for all)"
@@ -92,6 +93,7 @@ def parse_args():
     )
     
     return parser.parse_args()
+
 
 def run_list_domains(config: Dict[str, Any], args) -> None:
     """List available domains in the mdCATH dataset."""
