@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-> A comprehensive pipeline for processing Molecular Dynamics simulations from the CATH database
+> A comprehensive pipeline for processing Molecular Dynamics simulations from the mdCATH database
 
 ## 📋 Table of Contents
 
