@@ -241,13 +241,11 @@ graph TD
     D --> E[Voxelized Structures]
     B --> F[RMSF Analysis]
     C --> G[Structural Features]
-    B --> J[ML Features]
-    G --> H[ML Features]
+    B --> H[ML Features]
+    G --> H
     F --> I[Visualizations]
     H --> J[Machine Learning]
     E --> J
-    C --> K[DSSP / MSMS]
-    K --> G
 ```
 
 ## 📋 Output Files
