@@ -242,7 +242,7 @@ graph TD
     B --> F[RMSF Analysis]
     C --> G[Structural Features]
     B --> J[ML Features]
-    G --> H
+    G --> H[ML Features]
     F --> I[Visualizations]
     H --> J[Machine Learning]
     E --> J
