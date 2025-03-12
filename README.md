@@ -246,6 +246,8 @@ graph TD
     F --> I[Visualizations]
     H --> J[Machine Learning]
     E --> J
+    C --> K[DSSP / MSMS]
+    K --> G
 ```
 
 ## 📋 Output Files
