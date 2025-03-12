@@ -241,8 +241,8 @@ graph TD
     D --> E[Voxelized Structures]
     B --> F[RMSF Analysis]
     C --> G[Structural Features]
-    B --> H[ML Features]
-    G --> H
+    B --> J
+    G --> H[ML Features]
     F --> I[Visualizations]
     H --> J[Machine Learning]
     E --> J
