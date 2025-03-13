@@ -128,7 +128,7 @@ output:
 
 processing:
   frame_selection:
-    method: rmsd                        # Frame selection method (rmsd, regular, gyration, random)
+    method: rmsd                        # Frame selection method (rmsd (Cull the min/max 5A get rid of the random noise), regular, gyration, random) # Boltzman try: , Accept: Based on energy, Generate a random number, 
     num_frames: 5                       # Number of frames to extract per temperature
     cluster_method: kmeans              # Clustering method for RMSD-based selection
 
