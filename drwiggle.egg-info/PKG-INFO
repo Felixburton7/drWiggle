@@ -1,0 +1,194 @@
+Metadata-Version: 2.2
+Name: drwiggle
+Version: 1.0.0
+Summary: Protein Flexibility Classification Framework
+Home-page: https://github.com/yourusername/drwiggle
+Author: AI Assistant (via Prompt)
+Author-email: your.email@example.com
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering :: Bio-Informatics
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.20
+Requires-Dist: pandas>=1.3
+Requires-Dist: scikit-learn>=1.1
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: click>=8.0
+Requires-Dist: matplotlib>=3.5
+Requires-Dist: seaborn>=0.11
+Requires-Dist: joblib>=1.0
+Requires-Dist: tqdm>=4.60
+Requires-Dist: torch>=1.10
+Requires-Dist: optuna>=2.10
+Requires-Dist: biopython>=1.79
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# drWiggle: Protein Flexibility Classification Framework
+
+**drWiggle** is a Python framework designed to classify protein residue flexibility based on structural features and Root Mean Square Fluctuation (RMSF) data derived from molecular dynamics simulations or other sources. It transforms continuous RMSF values into discrete flexibility categories and provides an end-to-end pipeline for data processing, model training (Random Forest, Neural Networks with HPO), evaluation, PDB feature integration, visualization (including structural mapping), and temperature-dependent analysis.
+
+## Features
+
+*   **RMSF Binning:** Converts continuous RMSF into a configurable number of discrete classes (default: 5, Very Rigid to Very Flexible).
+*   **Binning Strategies:** Implements K-means and Quantile-based binning methods.
+*   **Feature Engineering:** Extracts relevant features including sequence context (windowing), structural properties (from PDB), and normalized values.
+*   **Classification Models:** Includes Random Forest and Feed-Forward Neural Network classifiers.
+*   **Hyperparameter Optimization:** Integrated support via Scikit-learn's RandomizedSearchCV (RF) and Optuna (NN).
+*   **PDB Integration:** Extracts features (B-factor, Secondary Structure, Solvent Accessibility, Dihedral Angles) directly from PDB files using BioPython (requires external DSSP for SS/ACC).
+*   **Visualization:** Generates plots for distributions, confusion matrices, feature importance, and PyMOL scripts/colored PDB files to map flexibility onto protein structures.
+*   **Temperature Analysis:** Compares classifications and model performance across different temperatures, calculating metrics like transition matrices (TBD).
+*   **Command-Line Interface:** User-friendly CLI powered by Click for easy pipeline execution (`train`, `evaluate`, `predict`, `process-pdb`, etc.).
+*   **Configurable:** Pipeline behavior controlled via YAML configuration files with overrides via environment variables or CLI parameters.
+*   **Python Best Practices:** Emphasizes readability, modularity, type hinting, logging, and packaging standards.
+
+## Project Structure
+
+```
+drwiggle_project/      # Top-level directory for your project instance
+├── data/              # Input data files (e.g., CSVs with RMSF)
+├── models/            # Saved trained models and binners
+├── output/            # Generated outputs (plots, predictions, reports)
+├── pdb_cache/         # Cached downloaded PDB files
+└── drwiggle/          # The installable package code lives here
+    ├── drwiggle/      # Source code package
+    │   ├── __init__.py
+    │   ├── cli.py
+    │   ├── config.py
+    │   ├── pipeline.py
+    │   ├── default_config.yaml
+    │   ├── data/
+    │   │   ├── __init__.py
+    │   │   ├── binning.py
+    │   │   ├── loader.py
+    │   │   └── processor.py
+    │   ├── models/
+    │   │   ├── __init__.py
+    │   │   ├── base.py
+    │   │   ├── neural_network.py
+    │   │   └── random_forest.py
+    │   ├── utils/
+    │   │   ├── __init__.py
+    │   │   ├── helpers.py
+    │   │   ├── metrics.py
+    │   │   ├── pdb_tools.py
+    │   │   └── visualization.py
+    │   └── temperature/
+    │       ├── __init__.py
+    │       └── comparison.py
+    ├── setup.py       # Installation script
+    ├── README.md      # This file
+    └── tests/         # Unit and integration tests (placeholders)
+        └── ...
+```
+
+## Installation
+
+1.  **Clone the repository or create the structure:** Ensure you have the `drwiggle_project` directory containing the inner `drwiggle` package directory as shown above.
+
+2.  **Navigate to the `drwiggle` package directory:**
+    ```bash
+    cd path/to/drwiggle_project/drwiggle
+    ```
+
+3.  **Create and activate a virtual environment (recommended):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+    ```
+
+4.  **Install the package and dependencies:**
+    ```bash
+    pip install --upgrade pip setuptools wheel
+    pip install -e .
+    ```
+    *The `-e .` installs the package in "editable" mode, linking directly to your source code.*
+
+5.  **(Optional but Recommended) Install DSSP:** For calculating secondary structure and solvent accessibility from PDB files, install the `dssp` executable (e.g., via `apt`, `yum`, `conda`, or from source) and ensure it's in your system's PATH. Alternatively, specify the path in `config.yaml` (`pdb.dssp_path`).
+
+## Configuration
+
+The core behavior is defined in `drwiggle/drwiggle/default_config.yaml`. You can override settings in order of precedence:
+
+1.  **Command-line parameters:** e.g., `drwiggle train --binning quantile`
+2.  **Environment variables:** e.g., `export DRWIGGLE_BINNING_METHOD=quantile` (prefix `DRWIGGLE_`, nested keys joined by `_`)
+3.  **Custom YAML file:** `drwiggle train --config my_config.yaml`
+4.  **Default config:** `drwiggle/drwiggle/default_config.yaml`
+
+**Key Path Configuration:** Note that the default paths in `default_config.yaml` (`data_dir`, `output_dir`, etc.) are relative to the directory *where you run the `drwiggle` command*. The structure assumes you run it from `drwiggle_project/`. Adjust paths in your custom config if running from elsewhere.
+
+## Usage (CLI Examples)
+
+Ensure your data (e.g., `temperature_320_train.csv`) is placed in the `drwiggle_project/data` directory. Run commands from the `drwiggle_project` directory.
+
+*   **Train models:**
+    ```bash
+    # Train default models (all enabled in config) for temperature 320K
+    # Uses data matching pattern in config (e.g., ../data/temperature_320_*.csv)
+    # Outputs go to ../output/, models saved to ../models/
+    drwiggle train --temperature 320
+
+    # Train only Random Forest using a specific config, overriding binning method
+    drwiggle train --model random_forest --config drwiggle/my_config.yaml --binning quantile --temperature 348
+    ```
+
+*   **Evaluate models:**
+    ```bash
+    # Evaluate models previously trained for 320K on the test split
+    drwiggle evaluate --temperature 320
+    ```
+
+*   **Predict on new data:**
+    ```bash
+    # Predict using the saved model for 379K (assumes rf is trained/saved)
+    # Input file needs necessary features or columns to generate them
+    drwiggle predict --input ../data/new_data_features.csv --temperature 379 --model random_forest --output ../output/new_predictions.csv --probabilities
+    ```
+
+*   **Process a PDB file:**
+    ```bash
+    # Download 1AKE, extract features, predict flexibility at 320K, generate pymol script
+    # Assumes a model for 320K exists in ../models/
+    # Needs DSSP installed and in PATH for SS/ACC features
+    drwiggle process-pdb --pdb 1AKE --temperature 320 --output-dir ../output/pdb_vis/1AKE --model random_forest
+    # Note: If providing a local file: --pdb /path/to/myprotein.pdb
+    ```
+
+*   **Compare temperatures:**
+    ```bash
+    # Analyze how classifications change across temperatures (requires multiple runs/saved results)
+    # Work in progress - details depend on implementation
+    drwiggle compare-temperatures --output-dir ../output/temp_comparison
+    ```
+
+*   **Analyze RMSF distribution:**
+    ```bash
+    # Plot the RMSF distribution from a data file and show bin boundaries
+    drwiggle analyze-distribution --input ../data/temperature_320_train.csv --temperature 320 --binning kmeans --output-dir ../output/analysis
+    ```
+
+Use `drwiggle <command> --help` for details on specific commands and options.
+
+## Contributing
+
+Contributions, bug reports, and feature requests are welcome! Please open an issue or submit a pull request on the project repository.
+
+## License
+
+[Specify Your License Here - e.g., MIT License] Defaulting to MIT for now.
+See the LICENSE file for details.

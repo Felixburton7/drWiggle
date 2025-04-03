@@ -1,0 +1,2 @@
+[console_scripts]
+drwiggle = drwiggle.cli:cli

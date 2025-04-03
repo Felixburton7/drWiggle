@@ -1,0 +1,211 @@
+# drWiggle Default Configuration
+
+# --- Paths ---
+# IMPORTANT: These paths are relative to the directory where the 'drwiggle' command is run.
+# The recommended setup is to run 'drwiggle' from the top 'drwiggle_project' directory.
+paths:
+  data_dir: ../data                # Input data directory
+  output_dir: ../output            # General output directory (plots, reports, predictions)
+  models_dir: ../models            # Directory to save/load trained models and binners
+  pdb_cache_dir: ../pdb_cache      # Directory to cache downloaded PDB files
+
+# --- Binning Configuration ---
+binning:
+  method: "kmeans"                # "kmeans" or "quantile"
+  num_classes: 5                  # Number of flexibility classes (bins)
+  kmeans:                         # Settings for K-means binning
+    random_state: 42              # Random seed for reproducibility
+    max_iter: 300                 # Max iterations for a single run
+    n_init: 10                    # Number of times k-means runs with different centroids
+  quantile:                       # Settings for Quantile binning
+    # Percentiles defining bin edges. Must have num_classes + 1 elements.
+    percentiles: [0, 20, 40, 60, 80, 100]
+  store_boundaries: true          # Save the calculated bin boundaries along with models
+
+# --- Dataset Configuration ---
+dataset:
+  # Pattern to find data files if --input is not specified. {temperature} is replaced.
+  file_pattern: "temperature_{temperature}_train.csv" # ADJUST based on your filenames
+  features:
+    # Select features to use as input for the models
+    use_features:
+      # Basic Features (typically present in input CSV or calculable)
+      protein_size: true               # Total number of residues in the domain/protein
+      normalized_resid: true           # Residue index normalized to [0, 1] within the domain
+      resname_encoded: true            # Amino acid type encoded numerically
+
+      # PDB-derived Features (require --pdb or pre-calculation)
+      b_factor: true                   # B-factor from PDB (if pdb.enabled and pdb.features.b_factor)
+      relative_accessibility: false    # Relative solvent accessibility (requires DSSP)
+      core_exterior_encoded: false     # Encoded residue location (requires calculation/annotation)
+      secondary_structure_encoded: true # Encoded secondary structure (requires DSSP)
+      phi_norm: true                   # Normalized Phi dihedral angle (requires PDB processing)
+      psi_norm: true                   # Normalized Psi dihedral angle (requires PDB processing)
+      esm_rmsf: true
+      voxel_rmsf: true
+
+    # Window Features (Sequence Context)
+    window:
+      enabled: true               # Use window-based features around the central residue
+      size: 1                     # Number of residues on EACH side (e.g., 3 -> window of 7)
+      # Features included in the window are those enabled above (e.g., resname_encoded, ss_encoded)
+
+  # Target Column (Continuous RMSF)
+  # {temperature} is replaced based on the run context.
+  target: rmsf_{temperature}      # Column name containing the continuous RMSF values for binning
+
+  # Data Splitting (Train/Validation/Test)
+  split:
+    test_size: 0.2                # Proportion of data for the final test set
+    validation_size: 0.15         # Proportion of ORIGINAL data for the validation set
+    stratify_by_domain: true      # Keep all residues of a domain in the same split (requires 'domain_id' column)
+    random_state: 42              # Seed for reproducible splits
+
+# --- Model Configurations ---
+models:
+  # Shared settings applicable to all models unless overridden
+  common:
+    # Cross-validation settings (currently primarily used by HPO)
+    cross_validation:
+      enabled: false              # Whether to use CV during main training (pipeline.train doesn't use this yet)
+      folds: 5                    # Number of CV folds
+    save_best: true               # Save the model that performs best on the validation set
+
+  # Random Forest Model
+  random_forest:
+    enabled: true                 # Train and evaluate this model
+    # Core RF parameters (used if HPO is disabled)
+    n_estimators: 100
+    max_depth: null               # null means nodes expanded until all leaves pure or min_samples_split
+    min_samples_split: 2
+    min_samples_leaf: 1
+    class_weight: "balanced"      # Adjusts weights inversely proportional to class frequencies
+    # HPO using RandomizedSearchCV
+    randomized_search:
+      enabled: false               # Enable hyperparameter optimization
+      n_iter: 2                  # Number of parameter combinations to try
+      cv: 2                       # Number of cross-validation folds within HPO
+      scoring: "balanced_accuracy" # Metric to optimize during HPO
+      param_distributions:        # Parameter search space
+        n_estimators: [50, 100, 200, 300, 400]
+        max_depth: [null, 10, 20, 30, 40, 50]
+        min_samples_split: [2, 5, 10, 15]
+        min_samples_leaf: [1, 2, 4, 6]
+        class_weight: ["balanced", "balanced_subsample", null]
+        # max_features: ['sqrt', 'log2', 0.5, 0.7] # Consider adding if many features
+
+  # Neural Network Model
+  neural_network:
+    enabled: true                 # Train and evaluate this model
+    architecture:
+      # Default architecture if HPO is disabled or parameters aren't tuned
+      hidden_layers: [128, 64, 32] # Sizes of hidden layers
+      activation: "relu"          # Activation function ('relu' or 'leaky_relu')
+      dropout: 0.3                # Dropout rate applied after activation in hidden layers
+      ordinal_output: false       # If true, uses a simplified ordinal setup (MSE loss - EXPERIMENTAL). False = standard classification.
+
+    training:
+      # Default training parameters if HPO is disabled or parameters aren't tuned
+      optimizer: "adam"           # 'adam' or 'sgd'
+      learning_rate: 0.001
+      batch_size: 64
+      epochs: 15                 # Maximum number of training epochs
+      early_stopping: true        # Enable early stopping based on validation loss
+      patience: 15                # Number of epochs to wait for improvement before stopping
+      class_weights: true         # Compute and use class weights for CrossEntropyLoss (ignored if ordinal_output=true)
+
+    # HPO using Optuna
+    hyperparameter_optimization:
+      enabled: false               # Enable hyperparameter optimization
+      method: "random"            # Optuna sampler ('random', 'tpe', etc.) - only random is simple default
+      trials: 30                  # Number of HPO trials to run
+      objective_metric: "val_loss" # Metric to optimize ('val_loss' or 'val_accuracy') - Optuna minimizes
+      parameters:                 # Parameter search space
+        hidden_layers: # Suggest choices for layer structures
+          - [64, 32]
+          - [128, 64]
+          - [256, 128]
+          - [128, 64, 32]
+          - [256, 128, 64]
+        learning_rate: [0.0001, 0.01] # Suggest Float (log uniform)
+        batch_size: [32, 64, 128]     # Suggest Categorical
+        dropout: [0.1, 0.5]          # Suggest Float (uniform)
+        activation: ["relu", "leaky_relu"] # Suggest Categorical
+        # Note: optimizer is not included in default search space but could be added
+
+# --- Evaluation Settings ---
+evaluation:
+  metrics: # Which metrics to calculate and report
+    accuracy: true
+    balanced_accuracy: true
+    precision: true               # Reports macro and weighted averages
+    recall: true                  # Reports macro and weighted averages
+    f1: true                      # Reports macro and weighted averages
+    confusion_matrix: true        # Requires saving/plotting separately
+    classification_report: true   # Requires saving separately
+    cohen_kappa: true
+    weighted_kappa: true          # Quadratic weighted kappa for ordinal agreement
+    ordinal_error: true           # Mean Absolute Error between predicted and true class indices
+
+  # Class names used in reports and visualizations
+  # Should have 'num_classes' entries, indexed from 0
+  class_names:
+    0: "Very Rigid"
+    1: "Rigid"
+    2: "Moderately Flexible"
+    3: "Flexible"
+    4: "Very Flexible"
+
+# --- Visualization Settings ---
+visualization:
+  # Colors used for classes in plots and structure visualizations
+  colors:
+    0: "#0C2D48"  # Very Rigid (dark blue)
+    1: "#145DA0"  # Rigid (blue)
+    2: "#B1D4E0"  # Moderately Flexible (light blue)
+    3: "#E8AB30"  # Flexible (orange)
+    4: "#D1603D"  # Very Flexible (red)
+  # Which plots to generate during the pipeline run
+  plots:
+    bin_distribution: true        # Plot RMSF distribution with bin boundaries (after binning)
+    confusion_matrix: true        # Plot confusion matrix (during evaluation)
+    feature_importance: true      # Plot feature importance (after training RF model)
+    class_distribution: false     # Plot class distribution (can be generated separately via 'visualize' command)
+    protein_visualization: true   # Generate PyMOL script (during process-pdb)
+    temperature_comparison: true  # Generate plots for temperature comparison results
+
+# --- Temperature Analysis Configuration ---
+temperature:
+  # Default temperature if not specified via CLI or env var.
+  # Also used for finding default data file if --input is not given.
+  current: 320
+  # List of temperatures available in your dataset (used by compare-temperatures command)
+  # Can include strings like "average" if you have averaged data.
+  available: [320, 348, 379, 413, 450] # Example temperatures
+  comparison:
+    enabled: true                 # Enable the 'compare-temperatures' command functionality
+    # How to handle binning when comparing across temperatures
+    # "global": Use bins defined by the 'current' temperature run for all comparisons.
+    # "specific": (Not fully implemented) Requires retraining/loading bins for each specific temperature.
+    binning_strategy: "global"
+    # Metrics to focus on in the comparison report/plots
+    metrics: ["accuracy", "balanced_accuracy", "ordinal_error", "weighted_kappa"]
+    plot_transition_matrix: true  # Plot class transition matrix between temperature pairs (TBD)
+
+# --- PDB Integration Settings ---
+pdb:
+  enabled: true                   # Master switch to enable PDB fetching and feature extraction
+  # Path to the DSSP executable. If null, searches PATH. REQUIRED for SS and ACC features.
+  dssp_path: null                 # Example: "/usr/local/bin/dssp" or "mkdssp" if in path
+  features:                       # Which features to extract/calculate from PDB
+    b_factor: true                # Extract B-factors
+    secondary_structure: true     # Calculate secondary structure (needs DSSP)
+    solvent_accessibility: true   # Calculate relative solvent accessibility (needs DSSP)
+    dihedral_angles: true         # Calculate phi, psi, omega angles
+
+# --- System Settings ---
+system:
+  n_jobs: -1                      # Number of CPU cores (-1 = use all available) for parallel tasks (e.g., RF training, HPO CV)
+  random_state: 42                # Global random seed for reproducibility across the pipeline
+  log_level: "INFO"               # Logging level ("DEBUG", "INFO", "WARNING", "ERROR")
+  gpu_enabled: "auto"             # "auto": Use GPU if available (CUDA/MPS), true: Require GPU, false: Force CPU
