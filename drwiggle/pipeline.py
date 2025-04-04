@@ -4,6 +4,7 @@ import time
 import traceback
 from typing import Dict, Any, Optional, List, Union, Tuple
 import sys
+import glob      # <<<--- Ensure this import is present
 
 import pandas as pd
 import numpy as np
@@ -18,7 +19,8 @@ from drwiggle.config import (
 from drwiggle.data.loader import load_data, find_data_file, load_rmsf_data
 from drwiggle.data.processor import process_features, split_data, prepare_data_for_model
 from drwiggle.data.binning import get_binner, BaseBinner
-from drwiggle.models import get_model_instance, get_enabled_models, BaseClassifier
+# <<<--- Ensure get_model_class is imported --- >>>
+from drwiggle.models import get_model_instance, get_enabled_models, BaseClassifier, get_model_class
 from drwiggle.utils.metrics import evaluate_classification, generate_confusion_matrix_df, generate_classification_report_dict
 from drwiggle.utils.visualization import (
     plot_bin_distribution, plot_confusion_matrix, plot_feature_importance,
@@ -321,12 +323,14 @@ class Pipeline:
         # 1. Determine Models to Evaluate
         models_dir = self.config['paths']['models_dir']
         if not model_names:
-            # Find saved models in the directory
-            found_files = glob.glob(os.path.join(models_dir, "*.joblib"))
+            # Find saved models in the directory (looking for .joblib as primary save format)
+            found_files = glob.glob(os.path.join(models_dir, "*.joblib")) # Use glob here
             # Exclude binner file
             model_files = [f for f in found_files if not os.path.basename(f).startswith('binner')]
+            # Exclude NN metadata file if naming convention is used
+            model_files = [f for f in model_files if not os.path.basename(f).endswith('_meta.joblib')]
             if not model_files:
-                 logger.error(f"No models specified and no '.joblib' model files found in {models_dir}. Cannot evaluate.")
+                 logger.error(f"No models specified and no primary '.joblib' model files found in {models_dir}. Cannot evaluate.")
                  return
             # Extract model names from filenames
             model_names = [os.path.splitext(os.path.basename(f))[0] for f in model_files]
@@ -383,14 +387,27 @@ class Pipeline:
 
             # Load model if not already loaded
             if not model:
+                # Assume primary file is .joblib (holds RF object or NN metadata)
                 model_path = os.path.join(models_dir, f'{model_name}.joblib')
                 if os.path.exists(model_path):
                     try:
-                        # Pass current config context for loading
-                        model = BaseClassifier.load(model_path, config=self.config)
+                        # <<<--- START CORRECTED MODEL LOADING --- >>>
+                        # 1. Get the correct model class based on name
+                        ModelClass = get_model_class(self.config, model_name) # Get e.g., RandomForestClassifier class type
+                        if ModelClass is None:
+                            # Log error and skip this model
+                            logger.error(f"Could not determine model class for '{model_name}'. Skipping.")
+                            continue # Go to the next model in the loop
+
+                        # 2. Call the load method specific to that class
+                        # This path (.joblib) works for RF and is the meta_path for NN
+                        model = ModelClass.load(model_path, config=self.config) # Calls the correct .load()
+                        # <<<--- END CORRECTED MODEL LOADING --- >>>
+
                         self.models[model_name] = model # Store loaded model
                         # Store feature names from loaded model if pipeline doesn't have them yet
-                        if self.feature_names_in_ is None and model.feature_names_in_:
+                        # Access feature_names_in_ AFTER model is loaded
+                        if model and self.feature_names_in_ is None and model.feature_names_in_:
                              self.feature_names_in_ = model.feature_names_in_
                              logger.info(f"Loaded feature names ({len(self.feature_names_in_)}) from model {model_name}.")
                     except Exception as e:
@@ -542,6 +559,7 @@ class Pipeline:
             model_name = default_model_to_try
             logger.warning(f"No model specified for prediction. Attempting to load default: '{model_name}'.")
 
+        # Assume primary file is .joblib (holds RF object or NN metadata)
         model_path = os.path.join(models_dir, f"{model_name}.joblib")
         if not os.path.exists(model_path):
             logger.error(f"Model file for '{model_name}' not found at {model_path}. Cannot predict.")
@@ -551,7 +569,17 @@ class Pipeline:
             # Check if model already loaded in pipeline instance
             model = self.models.get(model_name)
             if not model:
-                 model = BaseClassifier.load(model_path, config=self.config)
+                 # <<<--- START CORRECTED MODEL LOADING (Predict) --- >>>
+                 # 1. Get the correct model class based on name
+                 ModelClass = get_model_class(self.config, model_name) # Get e.g., RandomForestClassifier class type
+                 if ModelClass is None:
+                      # Log error and exit
+                      logger.error(f"Could not determine model class for '{model_name}'. Cannot predict.")
+                      return None # Exit prediction
+
+                 # 2. Call the load method specific to that class
+                 model = ModelClass.load(model_path, config=self.config) # Calls the correct .load()
+                 # <<<--- END CORRECTED MODEL LOADING (Predict) --- >>>
                  self.models[model_name] = model # Store loaded model
             # Ensure feature names are available from the loaded model
             if not model.feature_names_in_:
@@ -566,9 +594,18 @@ class Pipeline:
             # Ensure only necessary features in correct order are passed
             missing_features = set(self.feature_names_in_) - set(df_input.columns)
             if missing_features:
-                 raise ValueError(f"Input data missing required features for model '{model_name}': {missing_features}")
+                 # Try to recalculate missing features if possible (e.g., process the input df)
+                 logger.warning(f"Input data missing required features: {missing_features}. Attempting to process input DataFrame.")
+                 df_input_processed = process_features(df_input, self.config)
+                 # Check again after processing
+                 missing_features = set(self.feature_names_in_) - set(df_input_processed.columns)
+                 if missing_features:
+                      raise ValueError(f"Input data still missing required features for model '{model_name}' after processing: {missing_features}")
+                 df_to_use = df_input_processed
+            else:
+                 df_to_use = df_input # Use original if features already present
 
-            X_pred, _, _ = prepare_data_for_model(df_input, self.config, target_col=None, features=self.feature_names_in_)
+            X_pred, _, _ = prepare_data_for_model(df_to_use, self.config, target_col=None, features=self.feature_names_in_)
 
         except (ValueError, KeyError) as e:
             logger.error(f"Failed to prepare input data for prediction with model '{model_name}': {e}", exc_info=True)
@@ -596,9 +633,9 @@ class Pipeline:
             return None
 
         # 5. Format Output
-        # Include original identifiers if possible
-        id_cols = [col for col in ['domain_id', 'chain_id', 'resid', 'icode', 'resname'] if col in df_input.columns]
-        result_df = df_input[id_cols].reset_index(drop=True).copy()
+        # Include original identifiers if possible, using the potentially processed df_to_use
+        id_cols = [col for col in ['domain_id', 'chain_id', 'resid', 'icode', 'resname'] if col in df_to_use.columns]
+        result_df = df_to_use[id_cols].reset_index(drop=True).copy()
         result_df['predicted_class'] = y_pred
 
         if y_prob is not None:
@@ -830,4 +867,3 @@ class Pipeline:
               logger.error(f"Error processing predictions file for visualization: {ve}")
          except Exception as e:
               logger.error(f"Failed to generate standalone visualizations: {e}", exc_info=True)
-

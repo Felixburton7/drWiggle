@@ -149,12 +149,19 @@ class BaseBinner(ABC):
         """Save the fitted binner state (including boundaries and config) to a file."""
         if not self._fitted:
             raise RuntimeError("Cannot save an unfitted binner.")
+            # Get the method key used (e.g., 'kmeans', 'quantile') from the config
+        method_key = self.binning_config.get('method', None)
+        if method_key is None:
+            # Fallback: try to infer from class name if method missing in loaded config (shouldn't happen often)
+            method_key = self.__class__.__name__.replace("Binner", "").lower()
+            logger.warning(f"Binner method key not found in config, inferring as '{method_key}' for saving.")
+
         state = {
             'boundaries': self.boundaries,
             'num_classes': self.num_classes,
             'binning_config': self.binning_config, # Save specific config section used
             'fitted': self._fitted,
-            'class_name': self.__class__.__name__, # Store class name for loading
+            'binner_method_key': method_key, # Store the config key used  # <<<--- NEW LINE
             'bin_centers': self._bin_centers # Save calculated centers
         }
         try:
@@ -182,13 +189,22 @@ class BaseBinner(ABC):
             state = joblib.load(path)
             logger.info(f"Loading binner state from {path}")
 
-            class_name = state.get('class_name')
-            if not class_name: raise ValueError("Saved state missing 'class_name'.")
+                # Get the method key used when saving
+            method_key = state.get('binner_method_key') # Try loading the new key first
+            if not method_key:
+                # Fallback for older saves that might have 'class_name'
+                class_name = state.get('class_name')
+                if class_name:
+                    logger.warning("Loading older binner format using class name. Converting to method key.")
+                    # Convert class name back to likely key (best effort)
+                    method_key = class_name.replace("Binner", "").lower() # e.g., "KMeansBinner" -> "kmeans"
+                else:
+                    raise ValueError("Saved binner state missing 'binner_method_key' or 'class_name'.")
 
-            # Find the correct class type from the registry
-            binner_cls = _BINNER_REGISTRY.get(class_name)
+            # Find the correct class type from the registry using the method key
+            binner_cls = _BINNER_REGISTRY.get(method_key) # <<<--- USE method_key FOR LOOKUP
             if not binner_cls:
-                 raise ValueError(f"Cannot find binner class '{class_name}' in registry for loading.")
+                raise ValueError(f"Cannot find binner class for method key '{method_key}' in registry for loading.")
 
             # Use the config stored in the state file primarily
             saved_config = state.get('config') # Older saves might have full config

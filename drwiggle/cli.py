@@ -4,6 +4,8 @@ import os
 import sys
 import pandas as pd
 from typing import Optional, Tuple
+import traceback
+
 
 # --- Configure Logging ---
 # Basic config here, gets potentially overridden by config file later in load_config

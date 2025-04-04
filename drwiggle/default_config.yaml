@@ -12,14 +12,16 @@ paths:
 # --- Binning Configuration ---
 binning:
   method: "kmeans"                # "kmeans" or "quantile"
-  num_classes: 5                  # Number of flexibility classes (bins)
+  num_classes:  5                 # Number of flexibility classes (bins)
+  # num_classes:  5                 # Number of flexibility classes (bins)
   kmeans:                         # Settings for K-means binning
     random_state: 42              # Random seed for reproducibility
     max_iter: 300                 # Max iterations for a single run
-    n_init: 10                    # Number of times k-means runs with different centroids
+    n_init: 30                    # Number of times k-means runs with different centroids
   quantile:                       # Settings for Quantile binning
     # Percentiles defining bin edges. Must have num_classes + 1 elements.
-    percentiles: [0, 20, 40, 60, 80, 100]
+    percentiles: [0, 33.3, 66.7, 100] # Roughly equal thirds
+    # percentiles: [0, 20, 40, 60, 80, 100] # Equal population
   store_boundaries: true          # Save the calculated bin boundaries along with models
 
 # --- Dataset Configuration ---
@@ -35,9 +37,9 @@ dataset:
       resname_encoded: true            # Amino acid type encoded numerically
 
       # PDB-derived Features (require --pdb or pre-calculation)
-      b_factor: true                   # B-factor from PDB (if pdb.enabled and pdb.features.b_factor)
-      relative_accessibility: false    # Relative solvent accessibility (requires DSSP)
-      core_exterior_encoded: false     # Encoded residue location (requires calculation/annotation)
+      b_factor: false                   # B-factor from PDB (if pdb.enabled and pdb.features.b_factor)
+      relative_accessibility: true    # Relative solvent accessibility (requires DSSP)
+      core_exterior_encoded: true     # Encoded residue location (requires calculation/annotation)
       secondary_structure_encoded: true # Encoded secondary structure (requires DSSP)
       phi_norm: true                   # Normalized Phi dihedral angle (requires PDB processing)
       psi_norm: true                   # Normalized Psi dihedral angle (requires PDB processing)
@@ -47,7 +49,7 @@ dataset:
     # Window Features (Sequence Context)
     window:
       enabled: true               # Use window-based features around the central residue
-      size: 1                     # Number of residues on EACH side (e.g., 3 -> window of 7)
+      size: 3                     # Number of residues on EACH side (e.g., 3 -> window of 7)
       # Features included in the window are those enabled above (e.g., resname_encoded, ss_encoded)
 
   # Target Column (Continuous RMSF)
@@ -56,8 +58,8 @@ dataset:
 
   # Data Splitting (Train/Validation/Test)
   split:
-    test_size: 0.2                # Proportion of data for the final test set
-    validation_size: 0.15         # Proportion of ORIGINAL data for the validation set
+    test_size: 0.1               # Proportion of data for the final test set
+    validation_size: 0.1         # Proportion of ORIGINAL data for the validation set
     stratify_by_domain: true      # Keep all residues of a domain in the same split (requires 'domain_id' column)
     random_state: 42              # Seed for reproducible splits
 
@@ -70,6 +72,78 @@ models:
       enabled: false              # Whether to use CV during main training (pipeline.train doesn't use this yet)
       folds: 5                    # Number of CV folds
     save_best: true               # Save the model that performs best on the validation set
+
+  lightgbm:
+    enabled: true                 # Train and evaluate this model
+    # Core LightGBM parameters
+    objective: 'multiclass'
+    metric: 'multi_logloss'       # Metric for internal evaluation and early stopping
+    n_estimators: 100
+    learning_rate: 0.1
+    num_leaves: 31                # Main parameter to control complexity (usually < 2^max_depth)
+    max_depth: -1                 # -1 means no limit, complexity controlled by num_leaves
+    subsample: 0.8                # Fraction of samples per tree (alias: bagging_fraction)
+    colsample_bytree: 0.8         # Fraction of features per tree (alias: feature_fraction)
+    reg_alpha: 0.0                # L1 regularization
+    reg_lambda: 0.0               # L2 regularization
+    class_weight: 'balanced'      # Handles class imbalance directly
+
+    # Training specific settings
+    training:
+      early_stopping_rounds: 10   # Stop if eval metric doesn't improve (requires validation set)
+      verbose: false              # Set LightGBM's internal verbosity during fit callbacks
+
+    # HPO using RandomizedSearchCV
+    randomized_search:
+      enabled: false               # Enable hyperparameter optimization
+      n_iter: 2                  # Number of parameter combinations to try
+      cv: 1                       # Number of cross-validation folds within HPO
+      scoring: "balanced_accuracy" # Metric to optimize during HPO
+      param_distributions:        # Parameter search space for LightGBM
+        n_estimators: [50, 100, 200, 300, 500, 700]
+        learning_rate: [0.01, 0.05, 0.1, 0.2]
+        num_leaves: [15, 31, 50, 70, 100] # Key tuning parameter
+        # max_depth: [5, 7, 10, -1] # Often less critical if num_leaves is tuned
+        subsample: [0.6, 0.7, 0.8, 0.9, 1.0]
+        colsample_bytree: [0.6, 0.7, 0.8, 0.9, 1.0]
+        reg_alpha: [0, 0.01, 0.1, 1]
+        reg_lambda: [0, 0.01, 0.1, 1]
+
+  xgboost:
+    enabled: true                 # Train and evaluate this model
+    # Core XGBoost parameters (used if HPO is disabled)
+    objective: 'multi:softprob'   # Output probabilities for each class
+    eval_metric: 'mlogloss'       # Multiclass logloss for evaluation/early stopping
+    n_estimators: 100             # Number of boosting rounds
+    learning_rate: 0.1            # Step size shrinkage
+    max_depth: 6                  # Maximum tree depth
+    subsample: 0.8                # Fraction of samples used per tree
+    colsample_bytree: 0.8         # Fraction of features used per tree
+    gamma: 0                      # Minimum loss reduction required to make a further partition
+    reg_alpha: 0                  # L1 regularization term on weights
+    reg_lambda: 1                 # L2 regularization term on weights (default in XGBoost)
+    use_sample_weights: true      # Calculate and use sample weights for class imbalance
+
+    # Training specific settings (like early stopping)
+    training:
+      early_stopping_rounds: 10   # Stop if eval metric doesn't improve for this many rounds (requires validation set)
+      verbose: false              # Print eval metrics during training if True
+
+    # HPO using RandomizedSearchCV
+    randomized_search:
+      enabled: false               # Enable hyperparameter optimization
+      n_iter: 30                  # Number of parameter combinations to try (increase for better search)
+      cv: 3                       # Number of cross-validation folds within HPO
+      scoring: "balanced_accuracy" # Metric to optimize during HPO
+      param_distributions:        # Parameter search space for XGBoost
+        n_estimators: [50, 100, 200, 300, 500]
+        learning_rate: [0.01, 0.05, 0.1, 0.2] # Could use scipy.stats.uniform(0.01, 0.2) for continuous search
+        max_depth: [3, 5, 7, 9, 11]
+        subsample: [0.6, 0.7, 0.8, 0.9, 1.0]
+        colsample_bytree: [0.6, 0.7, 0.8, 0.9, 1.0]
+        gamma: [0, 0.1, 0.5, 1]
+        reg_alpha: [0, 0.01, 0.1, 1]
+        reg_lambda: [0.5, 1, 1.5, 2]
 
   # Random Forest Model
   random_forest:
@@ -93,6 +167,7 @@ models:
         min_samples_leaf: [1, 2, 4, 6]
         class_weight: ["balanced", "balanced_subsample", null]
         # max_features: ['sqrt', 'log2', 0.5, 0.7] # Consider adding if many features
+  
 
   # Neural Network Model
   neural_network:
@@ -209,3 +284,9 @@ system:
   random_state: 42                # Global random seed for reproducibility across the pipeline
   log_level: "INFO"               # Logging level ("DEBUG", "INFO", "WARNING", "ERROR")
   gpu_enabled: "auto"             # "auto": Use GPU if available (CUDA/MPS), true: Require GPU, false: Force CPU
+
+# 5xh3. 
+# - RMSF data. 
+# - 
+
+# 6eqe. 

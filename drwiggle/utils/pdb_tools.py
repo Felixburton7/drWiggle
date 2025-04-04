@@ -1,3 +1,6 @@
+# --- File: drwiggle/utils/pdb_tools.py ---
+# Corrected with debug print statements around BioPython import
+
 import logging
 import os
 import re
@@ -5,6 +8,17 @@ import warnings
 from typing import Dict, Any, Optional, Tuple, List
 import pandas as pd
 import numpy as np
+
+# Local imports (keep these first if possible, though sometimes order matters less)
+# Defer config import if it causes circular issues, but seems okay here
+from drwiggle.config import get_pdb_config, get_pdb_feature_config
+from drwiggle.utils.helpers import ensure_dir
+
+logger = logging.getLogger(__name__)
+
+# --- DEBUG ---
+print("DEBUG: Attempting to import BioPython in pdb_tools.py...")
+# --- END DEBUG ---
 
 # Biopython imports
 try:
@@ -14,8 +28,20 @@ try:
     from Bio.PDB.PDBList import PDBList
     from Bio.SeqUtils import seq1 # To convert 3-letter AA code to 1-letter
     _biopython_available = True
+    # --- DEBUG ---
+    print("DEBUG: BioPython imported successfully in pdb_tools.py.")
+    # --- END DEBUG ---
 except ImportError:
-    logging.getLogger(__name__).warning("BioPython not found. PDB processing features will be unavailable. Install with `pip install biopython`.")
+    # --- DEBUG ---
+    print("DEBUG: ImportError caught in pdb_tools.py.")
+    # --- END DEBUG ---
+    # Log the warning using the logger setup by the main application
+    # Check if a logger exists before trying to use it during initial import phase
+    try:
+        logging.getLogger(__name__).warning("BioPython not found. PDB processing features will be unavailable. Install with `pip install biopython`.")
+    except Exception: # Catch potential logging setup issues during import
+        print("Warning: BioPython not found (logging not fully configured yet). Install with `pip install biopython`.")
+
     # Define dummy classes/functions to avoid errors if module is imported but BP not installed
     class PDBParser: pass
     class PDBIO: pass
@@ -27,11 +53,6 @@ except ImportError:
     def seq1(res): return 'X'
     _biopython_available = False
 
-# Local imports
-from drwiggle.config import get_pdb_config, get_pdb_feature_config
-from drwiggle.utils.helpers import ensure_dir
-
-logger = logging.getLogger(__name__)
 
 # --- PDB Parsing and Feature Extraction ---
 
@@ -47,6 +68,7 @@ def fetch_pdb(pdb_id: str, cache_dir: str) -> Optional[str]:
         The path to the cached PDB file (format .pdb), or None if download fails.
     """
     if not _biopython_available:
+         # Use logger now as it should be configured when function is called
          logger.error("BioPython PDBList not available for fetching PDB files.")
          return None
 
@@ -193,34 +215,7 @@ def extract_pdb_features(
     # --- Iterate through residues and extract features ---
     logger.info(f"Extracting features for Model ID: {model_id} of Structure: {pdb_structure_id}")
     residue_counter = 0
-    phi_psi_list = [] # Store calculated dihedrals if requested early
-    if feature_flags.get('dihedral_angles'):
-        # Calculate dihedrals for all polypeptides in the model first
-        for chain in structure_model:
-            try:
-                # PolypeptideBuilder should have been used during parsing for phi/psi
-                polypeptides = chain.get_list() # Access polypeptides built during parsing
-                for pp in polypeptides:
-                    if isinstance(pp, Polypeptide.Polypeptide): # Check it's a polypeptide object
-                        phi_psi_list.extend(pp.get_phi_psi_list())
-                    else:
-                        logger.warning(f"Unexpected object in chain list: {type(pp)}. Skipping dihedral calculation for this object.")
-            except Exception as e:
-                 logger.error(f"Error getting phi/psi list for chain {chain.id}: {e}", exc_info=True)
-                 # Continue processing other chains/features
-
-    # Create a map for faster dihedral lookup: (chain_id, res_id_tuple) -> (phi, psi)
-    phi_psi_map = {}
-    if phi_psi_list:
-        logger.debug(f"Mapping {len(phi_psi_list)} calculated phi/psi pairs to residues...")
-        res_index = 0
-        for chain in structure_model:
-            for residue in chain.get_residues():
-                # Important: Check if residue corresponds to an entry in phi_psi_list
-                # This relies on the list being in the same order as residues iterated here. Risky.
-                # It's safer to recalculate per residue if builder wasn't used or order is uncertain.
-                # Let's recalculate on the fly for robustness, though slower.
-                pass # Recalculate below instead of using precomputed list
+    # Note: Pre-calculating phi/psi list was removed for robustness, calculating per residue below
 
     for chain in structure_model:
         chain_id = chain.id
@@ -229,105 +224,91 @@ def extract_pdb_features(
             resname = residue.get_resname()
 
             # Skip HETATMs and non-standard residues
-            # Check hetflag (' ' means standard residue atom)
             if res_id_tuple[0] != ' ':
                 continue
-            # Check if it's a standard amino acid using Polypeptide module
             try:
                 is_standard_aa = Polypeptide.is_aa(residue, standard=True)
-            except Exception: # Handle cases where is_aa might fail on modified residues
+            except Exception:
                 is_standard_aa = False
             if not is_standard_aa:
                 continue
 
             res_seq_id = res_id_tuple[1] # Residue sequence number
-            res_icode = res_id_tuple[2].strip() # Insertion code (remove whitespace)
+            res_icode = res_id_tuple[2].strip() # Insertion code
 
             residue_features = {
-                # Use the main structure ID (e.g., PDB ID) as the domain identifier
                 "domain_id": pdb_structure_id,
                 "chain_id": chain_id,
                 "resid": res_seq_id,
-                # Only include icode if it's not empty
                 **({"icode": res_icode} if res_icode else {}),
                 "resname": resname,
             }
             residue_counter += 1
 
-            # Extract B-factor (average over CA atom if present, else backbone, else all non-H)
+            # Extract B-factor
             if feature_flags.get('b_factor'):
                 ca_atom = residue.get("CA")
                 if ca_atom:
                     bfactors = [ca_atom.get_bfactor()]
-                else: # Fallback to backbone or all heavy atoms
+                else:
                      backbone_atoms = ['N', 'CA', 'C', 'O']
                      bfactors = [atom.get_bfactor() for atom_name, atom in residue.items() if atom_name in backbone_atoms]
-                     if not bfactors: # If still no backbone, use all heavy atoms
+                     if not bfactors:
                           bfactors = [atom.get_bfactor() for atom in residue if atom.element != 'H']
                 residue_features['b_factor'] = np.mean(bfactors) if bfactors else 0.0
 
-            # Extract DSSP features (SS and ACC)
-            ss = '-' # Default DSSP code for unknown/loop
-            rsa = np.nan # Default accessibility
+            # Extract DSSP features
+            ss = '-'
+            rsa = np.nan
             if dssp_results:
-                 # DSSP key uses the residue ID tuple directly (including hetflag, resid, icode)
                  dssp_key = (chain_id, res_id_tuple)
                  if dssp_key in dssp_results:
                       dssp_data = dssp_results[dssp_key]
-                      # Index 2 is SS code, Index 3 is relative accessibility (RSA)
                       if feature_flags.get('secondary_structure'):
                            ss = dssp_data[2]
                       if feature_flags.get('solvent_accessibility'):
                            rsa = dssp_data[3]
                  else:
-                      # Log only once per run if residues are missing to avoid spam
                       if not hasattr(extract_pdb_features, "_dssp_missing_logged"):
                            logger.warning(f"Residue {chain_id}:{res_id_tuple} not found in DSSP results. DSSP might skip residues. Subsequent warnings suppressed.")
                            extract_pdb_features._dssp_missing_logged = True
 
-
             residue_features['dssp'] = ss
             residue_features['relative_accessibility'] = rsa if not pd.isna(rsa) else None
 
-            # Extract Dihedral angles (Phi, Psi)
+            # Extract Dihedral angles
             if feature_flags.get('dihedral_angles'):
                  phi = None
                  psi = None
                  try:
-                      # Recalculate phi/psi using Polypeptide methods for robustness
                       phi = Polypeptide.calc_phi(residue)
                       psi = Polypeptide.calc_psi(residue)
                  except Exception as e:
-                      # Dihedrals might be undefined at termini or chain breaks
                       logger.debug(f"Could not calculate phi/psi for {chain_id}:{res_id_tuple}: {e}")
 
-                 # Convert radians from Biopython to degrees, handle None
                  residue_features['phi'] = np.degrees(phi) if phi is not None else None
                  residue_features['psi'] = np.degrees(psi) if psi is not None else None
 
             data.append(residue_features)
 
-    # Reset DSSP logging flag for next call
+    # Reset DSSP logging flag
     if hasattr(extract_pdb_features, "_dssp_missing_logged"):
         del extract_pdb_features._dssp_missing_logged
 
     df = pd.DataFrame(data)
     logger.info(f"Extracted features for {residue_counter} standard residues across {len(structure_model)} chains.")
 
-    # --- Post-processing (e.g., calculate core/exterior) ---
-    # This often requires more complex calculations (e.g., SASA, neighbor counts)
+    # --- Post-processing ---
     if feature_flags.get('core_exterior_encoded'):
          logger.warning("Feature 'core_exterior_encoded' requested, but calculation logic is not implemented. Column will be missing or filled with UNK.")
-         # Placeholder: add column if requested, needs actual calculation logic
          if 'relative_accessibility' in df.columns and not df['relative_accessibility'].isnull().all():
-             # Example simple classification based on RSA threshold (e.g., 0.2)
              threshold = 0.20
              df['core_exterior'] = df['relative_accessibility'].apply(lambda x: 'SURFACE' if pd.notna(x) and x >= threshold else 'CORE')
              logger.info(f"Assigned 'core_exterior' based on RSA threshold ({threshold}).")
          else:
-              df['core_exterior'] = 'UNK' # Add placeholder column if RSA not available
+              df['core_exterior'] = 'UNK'
 
-    # Ensure required columns exist even if feature extraction failed partially
+    # Ensure required columns exist
     expected_cols = ['domain_id', 'chain_id', 'resid']
     if feature_flags.get('b_factor'): expected_cols.append('b_factor')
     if feature_flags.get('secondary_structure'): expected_cols.append('dssp')
@@ -355,9 +336,6 @@ class ColorByFlexibilitySelect(Select):
         """
         self.predictions = predictions_map
         self.default_b = default_b
-        # Map class index (0, 1, 2, 3, 4) to representative B-factor values (e.g., low B for rigid)
-        # Higher B-factor usually means more flexible/disordered
-        # Make this mapping potentially configurable? For now, hardcoded.
         self.class_to_bfactor = {
             0: 10.0,  # Very Rigid
             1: 25.0,  # Rigid
@@ -365,11 +343,10 @@ class ColorByFlexibilitySelect(Select):
             3: 60.0,  # Flexible
             4: 80.0,  # Very Flexible
         }
-        # Add mapping for potential classes beyond 4 if num_classes > 5
         max_class = max(self.class_to_bfactor.keys())
         max_b = self.class_to_bfactor[max_class]
-        for i in range(max_class + 1, 10): # Add up to class 9 as example
-            self.class_to_bfactor[i] = max_b + (i - max_class) * 15.0 # Increment B-factor
+        for i in range(max_class + 1, 10):
+            self.class_to_bfactor[i] = max_b + (i - max_class) * 15.0
 
         logger.debug(f"B-factor mapping for coloring: {self.class_to_bfactor}")
 
@@ -377,31 +354,32 @@ class ColorByFlexibilitySelect(Select):
         """Accepts the atom and sets its B-factor based on prediction."""
         residue = atom.get_parent()
         chain = residue.get_parent()
-        res_id_tuple = residue.get_id() # (hetflag, resid, icode)
+        res_id_tuple = residue.get_id()
 
-        # Only modify standard AA residues' atoms
-        if res_id_tuple[0] == ' ' and Polypeptide.is_aa(residue.get_resname(), standard=True):
-            chain_id = chain.id
-            res_seq_id = res_id_tuple[1] # Numeric residue ID
-            # Key uses only chain and numeric resid for simplicity (ignores icode for matching)
-            pred_key = (chain_id, res_seq_id)
+        # Default to keeping original B-factor unless it's a standard AA we have a prediction for
+        bfactor_to_set = atom.get_bfactor() # Start with original
 
-            predicted_class = self.predictions.get(pred_key)
-            if predicted_class is not None:
-                 b_factor_val = self.class_to_bfactor.get(predicted_class, self.default_b)
-                 atom.set_bfactor(float(b_factor_val)) # Ensure float B-factor
-            else:
-                 # Residue not found in predictions map
-                 atom.set_bfactor(self.default_b)
-                 # Log only once if residues are missing from the map
-                 if not hasattr(ColorByFlexibilitySelect, "_missing_logged"):
-                      logger.warning(f"Residue {chain_id}:{res_seq_id} not in prediction map. Setting B-factor to default {self.default_b}. Subsequent warnings suppressed.")
-                      ColorByFlexibilitySelect._missing_logged = True
-        else:
-             # Keep original B-factor for HETATMs, non-standard residues, etc.
-             pass
+        if res_id_tuple[0] == ' ':
+            try: # Protect against non-standard residues causing errors in is_aa
+                if Polypeptide.is_aa(residue.get_resname(), standard=True):
+                    chain_id = chain.id
+                    res_seq_id = res_id_tuple[1]
+                    pred_key = (chain_id, res_seq_id)
+                    predicted_class = self.predictions.get(pred_key)
 
-        return 1 # Keep the atom in the output
+                    if predicted_class is not None:
+                         bfactor_to_set = self.class_to_bfactor.get(predicted_class, self.default_b)
+                    else:
+                         bfactor_to_set = self.default_b # Apply default if not found
+                         if not hasattr(ColorByFlexibilitySelect, "_missing_logged"):
+                              logger.warning(f"Residue {chain_id}:{res_seq_id} not in prediction map. Setting B-factor to default {self.default_b}. Subsequent warnings suppressed.")
+                              ColorByFlexibilitySelect._missing_logged = True
+            except Exception as e:
+                logger.debug(f"Skipping B-factor modification for residue {chain.id}:{res_id_tuple} due to error: {e}")
+
+        # Set the B-factor (original or modified)
+        atom.set_bfactor(float(bfactor_to_set))
+        return 1 # Keep the atom
 
 
 def color_pdb_by_flexibility(
@@ -423,35 +401,25 @@ def color_pdb_by_flexibility(
 
     logger.info(f"Generating colored PDB file (using B-factor column): {output_pdb_path}")
 
-    # Create mapping for quick lookup: (chain_id, resid) -> predicted_class
     required_cols = ['chain_id', 'resid', 'predicted_class']
     if not all(col in predictions_df.columns for col in required_cols):
          logger.error(f"Predictions DataFrame must contain columns: {required_cols}. Found: {predictions_df.columns.tolist()}")
          return
     try:
-        # Ensure 'resid' is integer for matching PDB residue IDs
         predictions_df['resid'] = predictions_df['resid'].astype(int)
         pred_map = predictions_df.set_index(['chain_id', 'resid'])['predicted_class'].to_dict()
-    except KeyError:
-        # This error is redundant due to the check above but kept as safeguard
-        logger.error("Failed to create prediction map from DataFrame columns.")
-        return
     except Exception as e:
          logger.error(f"Error creating prediction map: {e}", exc_info=True)
          return
 
-
-    # Create PDBIO object and save with the custom selector
     io = PDBIO()
     io.set_structure(structure_model)
     ensure_dir(os.path.dirname(output_pdb_path))
 
-    # Reset the logging flag before saving
     if hasattr(ColorByFlexibilitySelect, "_missing_logged"):
         del ColorByFlexibilitySelect._missing_logged
 
     try:
-        # Use a default B=20 for residues not found in predictions
         io.save(output_pdb_path, select=ColorByFlexibilitySelect(pred_map, default_b=20.0))
         logger.info(f"Colored PDB saved successfully to {output_pdb_path}")
     except Exception as e:
@@ -479,11 +447,9 @@ def generate_pymol_script(
     class_names_map = get_class_names(config)
     num_classes = config.get('binning', {}).get('num_classes', 5)
 
-    # Validate colors exist for all classes
     if len(colors_map) < num_classes:
         logger.warning(f"Visualization colors defined ({len(colors_map)}) are fewer than number of classes ({num_classes}). Coloring may be incomplete.")
 
-    # Create the script content
     script_lines = [
         f"# PyMOL Script generated by drWiggle to color by flexibility",
         f"# Timestamp: {pd.Timestamp.now()}",
@@ -491,29 +457,25 @@ def generate_pymol_script(
         "set cartoon_fancy_helices, 1",
         "set cartoon_smooth_loops, 1",
         "show cartoon",
-        "color grey80, all" # Default color
+        "color grey80, all"
     ]
 
     if pdb_filename:
-        # Sanitize filename for PyMOL (e.g., escape special characters if necessary)
-        safe_pdb_filename = pdb_filename.replace("\\", "/") # Basic path normalization
-        script_lines.insert(1, f"load {safe_pdb_filename}") # Load the PDB if specified
+        safe_pdb_filename = pdb_filename.replace("\\", "/")
+        script_lines.insert(1, f"load {safe_pdb_filename}")
         obj_name = os.path.splitext(os.path.basename(safe_pdb_filename))[0]
-        script_lines.append(f"disable all") # Disable default representation
+        script_lines.append(f"disable all")
         script_lines.append(f"enable {obj_name}")
         script_lines.append(f"show cartoon, {obj_name}")
         script_lines.append(f"color grey80, {obj_name}")
 
-
-    # Define colors in PyMOL
-    pymol_color_names = {} # Map class index to pymol color name
+    pymol_color_names = {}
     for class_idx in range(num_classes):
-        color_hex = colors_map.get(class_idx) # Colors map should have integer keys
+        color_hex = colors_map.get(class_idx)
         class_name_safe = class_names_map.get(class_idx, f"class_{class_idx}").replace(" ", "_").replace("-","_").replace("/","_")
-        color_name_pymol = f"flex_{class_name_safe}" # Define a PyMOL color name
+        color_name_pymol = f"flex_{class_name_safe}"
 
         if color_hex:
-            # Convert hex #RRGGBB to PyMOL [R, G, B] list (0-1 range)
             try:
                 color_hex = color_hex.lstrip('#')
                 r = int(color_hex[0:2], 16) / 255.0
@@ -521,46 +483,46 @@ def generate_pymol_script(
                 b = int(color_hex[4:6], 16) / 255.0
                 script_lines.append(f"set_color {color_name_pymol}, [{r:.3f}, {g:.3f}, {b:.3f}]")
                 pymol_color_names[class_idx] = color_name_pymol
-            except (IndexError, ValueError, TypeError):
+            except Exception:
                 logger.warning(f"Invalid hex color format '{color_hex}' for class {class_idx}. Using grey80.")
-                pymol_color_names[class_idx] = "grey80" # Fallback color name
+                pymol_color_names[class_idx] = "grey80"
         else:
              logger.warning(f"Color not defined for class {class_idx}. Using grey80.")
-             pymol_color_names[class_idx] = "grey80" # Fallback color name
+             pymol_color_names[class_idx] = "grey80"
 
-    # Color residues based on prediction
     required_cols = ['chain_id', 'resid', 'predicted_class']
     if not all(col in predictions_df.columns for col in required_cols):
          logger.error(f"Predictions DataFrame for PyMOL script must contain columns: {required_cols}. Found: {predictions_df.columns.tolist()}")
          return
 
-    # Ensure 'resid' is integer
-    predictions_df['resid'] = predictions_df['resid'].astype(int)
+    try: # Add try-except around this block
+        predictions_df['resid'] = predictions_df['resid'].astype(int)
 
-    for class_idx in range(num_classes):
-        class_residues = predictions_df[predictions_df['predicted_class'] == class_idx]
-        color_name = pymol_color_names.get(class_idx, "grey80")
+        for class_idx in range(num_classes):
+            class_residues = predictions_df[predictions_df['predicted_class'] == class_idx]
+            color_name = pymol_color_names.get(class_idx, "grey80")
 
-        if not class_residues.empty:
-            selection_parts = []
-            # Group by chain to create selections like (chain A and resi 1+5+10)
-            for chain, group in class_residues.groupby('chain_id'):
-                 res_ids_str = "+".join(map(str, sorted(group['resid'].unique()))) # Sort for cleaner selection string
-                 selection_parts.append(f"(chain {chain} and resi {res_ids_str})")
+            if not class_residues.empty:
+                selection_parts = []
+                for chain, group in class_residues.groupby('chain_id'):
+                     res_ids_str = "+".join(map(str, sorted(group['resid'].unique())))
+                     selection_parts.append(f"(chain {chain} and resi {res_ids_str})")
 
-            if selection_parts:
-                # Combine selections for the same class with 'or'
-                full_selection = " or ".join(selection_parts)
-                # Apply coloring to the combined selection
-                script_lines.append(f"color {color_name}, ({full_selection})")
-            else:
-                 logger.debug(f"No residues found for class {class_idx} to color.")
+                if selection_parts:
+                    full_selection = " or ".join(selection_parts)
+                    script_lines.append(f"color {color_name}, ({full_selection})")
+                else:
+                     logger.debug(f"No residues found for class {class_idx} to color.")
 
-    script_lines.append("zoom vis")
-    script_lines.append(f"print('drWiggle coloring applied using colors: {pymol_color_names}')")
+        script_lines.append("zoom vis")
+        script_lines.append(f"print('drWiggle coloring applied using colors: {pymol_color_names}')")
+
+    except Exception as e:
+        logger.error(f"Error occurred while generating PyMOL color commands: {e}", exc_info=True)
+        # Optionally add a line indicating failure in the script itself
+        script_lines.append("print('ERROR: Failed to generate complete coloring commands.')")
 
 
-    # Write the script to file
     ensure_dir(os.path.dirname(output_pml_path))
     try:
         with open(output_pml_path, 'w') as f:
@@ -569,3 +531,4 @@ def generate_pymol_script(
     except Exception as e:
         logger.error(f"Failed to write PyMOL script: {e}", exc_info=True)
 
+# --- End File ---

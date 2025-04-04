@@ -38,6 +38,8 @@ setup(
         "torch>=1.10", # Specify version compatible with your CUDA/MPS if needed
         "optuna>=2.10",
         "biopython>=1.79",
+        "xgboost>=1.5",
+        "lightgbm>=3.0",
     ],
     entry_points={
         "console_scripts": [

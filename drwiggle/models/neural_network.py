@@ -4,7 +4,7 @@ import time
 from typing import Dict, Any, Optional, List, Tuple, Union
 import numpy as np
 import pandas as pd
-import joblib
+import joblib # Add this import
 import warnings
 
 # PyTorch Imports
@@ -33,7 +33,8 @@ except ImportError:
 
 # Local imports
 from .base import BaseClassifier
-from drwiggle.utils.helpers import progress_bar, save_object, load_object # Use helpers
+# Use helpers for joblib saving/loading within the class methods now
+from drwiggle.utils.helpers import progress_bar, save_object, load_object, ensure_dir
 
 logger = logging.getLogger(__name__)
 
@@ -508,72 +509,94 @@ class NeuralNetworkClassifier(BaseClassifier):
 
         return np.concatenate(probabilities)
 
+    # <<<--- START MODIFIED SAVE METHOD --- >>>
     def save(self, path: str):
-        """Save the trained model state, scaler, and config."""
-        super().save(path) # Checks fitted, creates dir
+        """Save the model state_dict using torch.save and the rest using joblib."""
+        # Derive paths for state_dict (.pt) and metadata (.joblib)
+        base_path, _ = os.path.splitext(path)
+        state_dict_path = f"{base_path}_statedict.pt"
+        # Ensure meta_path IS the original path passed (expected to be .joblib)
+        meta_path = path # Assume path is e.g. .../neural_network.joblib
+
+        # Check fitted status (from BaseClassifier.save logic)
+        if not self._fitted:
+            raise RuntimeError(f"Cannot save model '{self.model_name}' because it has not been fitted.")
+        try: # Add basic error handling around ensure_dir too
+            ensure_dir(os.path.dirname(path)) # Ensure directory for meta_path exists
+        except OSError as e:
+             logger.error(f"Failed to create directory for saving model at {path}: {e}")
+             raise IOError(f"Could not create directory for model file: {path}") from e
+
+        # 1. Save Model State Dict using torch.save
+        if self.model is None:
+            logger.warning(f"Model object is None for '{self.model_name}'. Cannot save model state dict.")
+        else:
+            try:
+                ensure_dir(os.path.dirname(state_dict_path)) # Ensure dir exists
+                torch.save(self.model.state_dict(), state_dict_path)
+                logger.info(f"NeuralNetwork state_dict saved to {state_dict_path}")
+            except Exception as e:
+                logger.error(f"Failed to save NeuralNetwork state_dict to {state_dict_path}: {e}", exc_info=True)
+                raise IOError(f"Could not save NN state_dict to {state_dict_path}") from e
+
+        # 2. Save Metadata (scaler, config, etc.) using joblib
         if not hasattr(self, 'scaler') or not hasattr(self.scaler, 'mean_'):
-             logger.warning(f"Scaler not found or not fitted for model '{self.model_name}'. Saving model without scaler state.")
+             logger.warning(f"Scaler not found or not fitted for model '{self.model_name}'. Saving metadata without scaler state.")
              scaler_state = None
         else:
              scaler_state = self.scaler
 
-        if self.model is None:
-            logger.warning(f"Model object is None for '{self.model_name}'. Cannot save model state dict.")
-            model_state_dict_to_save = None
-        else:
-            model_state_dict_to_save = self.model.state_dict()
-
-
-        state = {
-            'model_state_dict': model_state_dict_to_save,
-            'scaler_state': scaler_state, # Save the fitted scaler instance
+        meta_state = {
+            # DO NOT save model_state_dict here
+            'scaler_state': scaler_state,
             'feature_names_in_': self.feature_names_in_,
-            'config': self.config, # Save config used for this instance
-            'model_config': self.model_config, # Save specific config for this model
+            'config': self.config,
+            'model_config': self.model_config,
             'model_name': self.model_name,
             'num_classes': self.num_classes,
             'history': self.history,
-            'fitted': self._fitted
+            'fitted': self._fitted # Still save fitted status based on training completion
         }
         try:
-            # Use torch.save for potentially large tensors in state_dict
-            torch.save(state, path)
-            logger.info(f"NeuralNetwork model state saved to {path}")
+            save_object(meta_state, meta_path) # Use helper which uses joblib
+            logger.info(f"NeuralNetwork metadata saved to {meta_path}")
         except Exception as e:
-            logger.error(f"Failed to save NeuralNetwork model state to {path}: {e}", exc_info=True)
-            raise IOError(f"Could not save NN model state to {path}") from e
+            logger.error(f"Failed to save NeuralNetwork metadata to {meta_path}: {e}", exc_info=True)
+            # Should we delete the state_dict if meta fails? Maybe.
+            if self.model is not None and os.path.exists(state_dict_path):
+                 try: os.remove(state_dict_path)
+                 except OSError: pass
+            raise IOError(f"Could not save NN metadata state to {meta_path}") from e
+    # <<<--- END MODIFIED SAVE METHOD --- >>>
 
+    # <<<--- START MODIFIED LOAD METHOD --- >>>
     @classmethod
     def load(cls, path: str, config: Optional[Dict[str, Any]] = None) -> 'NeuralNetworkClassifier':
-        """Load a trained model state from disk."""
-        # Base class load method only checks file existence in this implementation
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Model file not found at {path}")
-        logger.info(f"Loading model '{cls.__name__}' from {path}...")
+        """Load metadata using joblib and model state_dict using torch.load."""
+        # --- NEW Simpler Path Derivation ---
+        meta_path = path # Assume path is the .joblib file
+        base_path, _ = os.path.splitext(meta_path)
+        state_dict_path = f"{base_path}_statedict.pt" # Derive state_dict path from joblib path
+        # --- End NEW Path Derivation ---
 
-        # Determine device based on availability during load time, respecting config if provided
-        runtime_config_system = config.get("system", {}) if config else {}
-        gpu_enabled_cfg = runtime_config_system.get("gpu_enabled", "auto")
-        force_cpu = gpu_enabled_cfg == False
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"Metadata file not found at {meta_path}")
+        if not os.path.exists(state_dict_path):
+             raise FileNotFoundError(f"Model state_dict file not found at {state_dict_path}")
 
-        if not force_cpu and torch.cuda.is_available(): device = torch.device("cuda")
-        elif not force_cpu and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and torch.backends.mps.is_built(): device = torch.device("mps")
-        else: device = torch.device("cpu")
+        logger.info(f"Loading model '{cls.__name__}' metadata from {meta_path} and state_dict from {state_dict_path}...")
 
-        logger.info(f"Loading NeuralNetwork state from {path} to device {device}")
+        # 1. Load Metadata using joblib (via helper)
         try:
-             # Load state dict using torch.load, mapping to the determined device
-             state = torch.load(path, map_location=device)
+            state = load_object(meta_path)
         except Exception as e:
-            logger.error(f"Failed to load torch state from {path}: {e}", exc_info=True)
-            raise IOError(f"Could not load NN model state from {path}") from e
+            logger.error(f"Failed to load metadata from {meta_path}: {e}", exc_info=True)
+            raise IOError(f"Could not load NN metadata from {meta_path}") from e
 
-        # Validate loaded state
-        required_keys = ['model_state_dict', 'scaler_state', 'feature_names_in_', 'model_config', 'model_name', 'num_classes', 'fitted']
+        # Basic validation of loaded metadata state
+        required_keys = ['scaler_state', 'feature_names_in_', 'model_config', 'model_name', 'num_classes', 'fitted']
         if not all(key in state for key in required_keys):
-             # Allow for missing history in older versions
-             if not all(key in state for key in required_keys if key != 'history'):
-                raise ValueError(f"Loaded NN state from {path} is missing required keys. Found: {list(state.keys())}")
+             raise ValueError(f"Loaded NN metadata from {meta_path} is missing required keys. Found: {list(state.keys())}")
 
         # Use loaded config if available, otherwise fall back to provided runtime config
         load_config = state.get('config', config)
@@ -583,42 +606,71 @@ class NeuralNetworkClassifier(BaseClassifier):
         # Re-instantiate the class
         instance = cls(config=load_config, model_name=state['model_name'])
 
-        # Restore state
+        # Restore state from metadata
         instance.scaler = state['scaler_state']
         instance.feature_names_in_ = state['feature_names_in_']
         instance.num_classes = state['num_classes']
         instance.history = state.get('history', {'train_loss': [], 'val_loss': [], 'val_accuracy': []}) # Handle older saves
         instance._fitted = state['fitted']
-        instance.device = device # Set device on loaded instance
 
-        # Re-create model architecture based on loaded config and load state dict
-        if state['model_state_dict']:
-             input_dim = len(instance.feature_names_in_) if instance.feature_names_in_ else None
-             if input_dim is None and instance.scaler and hasattr(instance.scaler, 'n_features_in_'):
-                   input_dim = instance.scaler.n_features_in_
-             if input_dim is None:
-                   raise ValueError("Cannot determine input dimension for loading NN model (missing feature names and scaler info).")
+        # --- Determine device for loading state_dict ---
+        runtime_config_system = load_config.get("system", {}) # Use potentially loaded config
+        gpu_enabled_cfg = runtime_config_system.get("gpu_enabled", "auto")
+        force_cpu = gpu_enabled_cfg == False
+        if not force_cpu and torch.cuda.is_available(): device = torch.device("cuda")
+        elif not force_cpu and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and torch.backends.mps.is_built(): device = torch.device("mps")
+        else: device = torch.device("cpu")
+        instance.device = device
+        logger.info(f"Loading NeuralNetwork state_dict to device {device}")
 
-             instance.model = DrWiggleNN(input_dim, instance.num_classes, instance.model_config).to(instance.device)
-             instance.model.load_state_dict(state['model_state_dict'])
-             instance.model.eval() # Set to evaluation mode
-             logger.info("Model architecture recreated and state dict loaded.")
-        else:
-             logger.warning(f"Loaded state for '{instance.model_name}' has no model_state_dict. Model not loaded.")
-             instance.model = None
-             instance._fitted = False # Mark as not fitted if model state is missing
+        # 2. Re-create model architecture & Load State Dict using torch.load
+        input_dim = len(instance.feature_names_in_) if instance.feature_names_in_ else None
+        if input_dim is None and instance.scaler and hasattr(instance.scaler, 'n_features_in_'):
+              input_dim = instance.scaler.n_features_in_
+        if input_dim is None:
+              raise ValueError("Cannot determine input dimension for loading NN model (missing feature names and scaler info).")
 
-        # Validate scaler
+        try:
+            instance.model = DrWiggleNN(input_dim, instance.num_classes, instance.model_config).to(instance.device)
+            # Load state dict - use weights_only=False explicitly if needed for compatibility or trust source
+            # Using weights_only=True (default in PyTorch >= 2.6) is safer if possible
+            try:
+                # Try default first (weights_only=True in newer PyTorch)
+                 model_state_dict = torch.load(state_dict_path, map_location=device)
+            except (TypeError, RuntimeError, AttributeError, EOFError) as e:
+                 # Fallback for older PyTorch versions or if weights_only=True fails unexpectedly
+                 # Check the error message - if it explicitly mentions weights_only, try False
+                 if 'weights_only' in str(e):
+                      logger.warning(f"torch.load with weights_only=True failed. Attempting with weights_only=False. Ensure the file source '{state_dict_path}' is trusted.")
+                      model_state_dict = torch.load(state_dict_path, map_location=device, weights_only=False)
+                 else:
+                      raise # Re-raise other torch load errors
+
+            instance.model.load_state_dict(model_state_dict)
+            instance.model.eval() # Set to evaluation mode
+            logger.info("Model architecture recreated and state dict loaded successfully.")
+        except FileNotFoundError:
+             logger.error(f"Model state_dict file not found: {state_dict_path}")
+             raise
+        except Exception as e:
+            logger.error(f"Failed to load torch state_dict from {state_dict_path}: {e}", exc_info=True)
+            # Mark as not fitted if state dict loading fails
+            instance.model = None
+            instance._fitted = False
+            raise IOError(f"Could not load NN state_dict from {state_dict_path}") from e
+
+        # Validate scaler (moved check here)
         if instance.scaler and not hasattr(instance.scaler, 'mean_'):
              logger.warning(f"Loaded scaler for model '{instance.model_name}' appears not to be fitted.")
-             # Should we mark instance._fitted as False? Or assume model can run without scaler? Risky.
-             instance._fitted = False # If scaler missing/unfitted, cannot reliably predict
+             # Mark as not fitted if scaler missing/unfitted?
+             # instance._fitted = False # Let's assume fitted status from meta_state is primary indicator
 
         if not instance._fitted:
-             logger.warning(f"Loaded model '{instance.model_name}' from {path} is marked as not fitted (check model state and scaler).")
+             logger.warning(f"Loaded model '{instance.model_name}' from {meta_path} is marked as not fitted (check metadata file).")
 
         logger.info(f"Model '{instance.model_name}' loaded successfully.")
         return instance
+    # <<<--- END MODIFIED LOAD METHOD --- >>>
 
 
     def get_feature_importance(self) -> Optional[Dict[str, float]]:
@@ -746,13 +798,13 @@ class NeuralNetworkClassifier(BaseClassifier):
                                else: # Indent Level 3
                                     loss_val = temp_criterion(outputs_val, batch_y_val)
                                     _, preds = torch.max(outputs_val, 1)
-                                    epoch_val_loss += loss_val.item() * batch_X_val.size(0) # <-- THIS LINE (and maybe others below) needs to be indented to Level 3
-                                    correct_preds += (preds == batch_y_val).sum().item() # <-- Also needs Level 3
-                                    total_preds += batch_y_val.size(0) # <-- Also needs Level 3
+                               # Correct indentation for these lines:
+                               epoch_val_loss += loss_val.item() * batch_X_val.size(0) # <-- Must be Level 3
+                               correct_preds += (preds == batch_y_val).sum().item() # <-- Must be Level 3
+                               total_preds += batch_y_val.size(0) # <-- Must be Level 3
 
                      # This part should be at Indent Level 2
                      avg_val_loss = epoch_val_loss / len(val_loader_trial.dataset)
-                     # ... rest of the validation block ...
                      val_accuracy = correct_preds / total_preds if total_preds > 0 else 0.0
                      trial_history['val_loss'].append(avg_val_loss)
                      trial_history['val_accuracy'].append(val_accuracy)
