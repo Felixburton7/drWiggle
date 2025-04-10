@@ -27,6 +27,21 @@
 This diagram illustrates the data flow and key processes within the `drWiggle` framework:
 
 ```mermaid
+graph LR
+    A[Launch App] --> B[Set Timer Duration]
+    B --> C[Choose Drink Type]
+    C --> D[Start Timer]
+    D --> E[Watch Drink Deplete]
+    E --> F[Timer Completion]
+    F --> G[Notification Sound]
+    F --> H[Reset for Next Session]
+    
+    style A fill:#f9d5e5,stroke:#333,stroke-width:2px
+    style D fill:#eeeeee,stroke:#333,stroke-width:4px
+    style F fill:#d5f9e5,stroke:#333,stroke-width:2px
+```
+
+```mermaid
 graph TD
     subgraph Inputs
         A[Input Data (.csv)];
